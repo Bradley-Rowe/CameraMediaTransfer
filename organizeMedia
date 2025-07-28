@@ -1,0 +1,112 @@
+#!/bin/bash
+
+# Set source, destination, and recycle bin paths
+destination="/Volumes/Path/To/File/Share" #Destination on file server. 
+srcdir="/Users/Username/Path/To/Local/Folder" #Source directory containing images. 
+recyclebin="/volume1/serverName/#Recycle" #Path to the recycle bin (waste folder) on server.
+
+# Create recycle bin directory if it doesn't exist
+mkdir -p "$recyclebin"
+
+# Initialize counter
+i=0
+
+# Allowed extensions (case-insensitive)
+allowed_exts="jpg|jpeg|png|gif|heic|tiff|bmp|mp4|mov|avi|mkv|3gp|cr3|cr2|raf|arw|m4v"
+
+# Function to calculate size+hash signature
+get_signature() {
+  local f="$1"
+  if [[ -e "$f" ]]; then
+    local size=$(stat --format="%s" "$f")
+    local hash=$(sha256sum "$f" | awk '{print $1}')
+    echo "${size}_${hash}"
+  else
+    echo ""
+  fi
+}
+
+# Process files recursively
+while IFS= read -r -d '' file; do
+  extension="${file##*.}"
+  extension_lower=$(echo "$extension" | awk '{print tolower($0)}')
+
+  # Skip if extension is not allowed
+  if ! [[ $extension_lower =~ ^($allowed_exts)$ ]]; then
+    continue
+  fi
+
+  echo "Processing file: $file"
+
+  # Get mod date and formatted strings
+  mod_date=$(stat --format='%y' "$file" | cut -d'.' -f1)
+  creation_date=$(date -d "$mod_date" "+%B %-d %Y" | awk '{
+    day=$2
+    suffix="th"
+    if (day ~ /1$/ && day != 11) suffix="st"
+    else if (day ~ /2$/ && day != 12) suffix="nd"
+    else if (day ~ /3$/ && day != 13) suffix="rd"
+    printf "%s %d%s, %s", $1, day, suffix, $3
+  }')
+  creation_year=$(date -d "$mod_date" "+%Y")
+  creation_month=$(date -d "$mod_date" "+%B")
+
+  # Build destination directory
+  final_dir="$destination/$creation_year/$creation_month/$creation_date"
+  mkdir -p "$final_dir"
+
+  # Compute source file signature
+  file_signature=$(get_signature "$file")
+
+  base_name=$(basename "$file")
+  filename="${base_name%.*}"
+  extension="${base_name##*.}"
+  dest_file="$final_dir/$base_name"
+
+  if [[ ! -e "$dest_file" ]]; then
+    cp -p "$file" "$dest_file"
+    if [[ -e "$dest_file" ]]; then
+      mv "$file" "$recyclebin/"
+      echo "Copied and moved to recycle bin: $dest_file"
+      ((i++))
+    fi
+  else
+    dest_signature=$(get_signature "$dest_file")
+    if [[ "$file_signature" == "$dest_signature" ]]; then
+      echo "Source file signature is $file_signature and Destination file signature is $dest_signature"
+      echo "Duplicate file (same name, same signature). Skipping: $file"
+      echo "Moving duplicate file to the recycle bin due to file_signature matching destination_signature...."
+      mv "$file" "$recyclebin/"
+      continue
+    else
+      # Try new names with counter if signature differs
+      counter=1
+      while true; do
+        candidate="$final_dir/${filename}_$counter.${extension}"
+        if [[ ! -e "$candidate" ]]; then
+          cp -p "$file" "$candidate"
+          if [[ -e "$candidate" ]]; then
+            mv "$file" "$recyclebin/"
+            echo "Copied and moved to recycle bin: $candidate"
+            ((i++))
+          fi
+          break
+        else
+          candidate_signature=$(get_signature "$candidate")
+          if [[ "$file_signature" == "$candidate_signature" ]]; then
+            echo "Duplicate file (different name, same signature). Skipping copy of: $file"
+            echo "Moving duplicate file: $file to the recycle bin due to file_signature matching candidate_signature...."
+      		mv "$file" "$recyclebin/"
+            break
+          else
+            ((counter++))
+          fi
+        fi
+      done
+    fi
+  fi
+
+  echo "Files copied so far: $i"
+  echo
+
+done < <(find "$srcdir" -type f -print0)

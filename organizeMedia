@@ -18,9 +18,15 @@ allowed_exts="jpg|jpeg|png|gif|heic|tiff|bmp|mp4|mov|avi|mkv|3gp|cr3|cr2|raf|arw
 get_signature() {
   local f="$1"
   if [[ -e "$f" ]]; then
-    local size=$(stat --format="%s" "$f")
-    local hash=$(sha256sum "$f" | awk '{print $1}')
-    echo "${size}_${hash}"
+    local size
+    local hash
+    size=$(stat --format="%s" "$f" 2>/dev/null)
+    hash=$(sha256sum "$f" 2>/dev/null | awk '{print $1}')
+    if [[ -n "$size" && -n "$hash" ]]; then
+      echo "${size}_${hash}"
+    else
+      echo "ERROR"
+    fi
   else
     echo ""
   fi
@@ -57,12 +63,17 @@ while IFS= read -r -d '' file; do
 
   # Compute source file signature
   file_signature=$(get_signature "$file")
+  if [[ "$file_signature" == "ERROR" || -z "$file_signature" ]]; then
+    echo "Error getting signature for source file: $file"
+    continue
+  fi
 
   base_name=$(basename "$file")
   filename="${base_name%.*}"
   extension="${base_name##*.}"
   dest_file="$final_dir/$base_name"
 
+  # Case 1: File doesn't exist in destination
   if [[ ! -e "$dest_file" ]]; then
     cp -p "$file" "$dest_file"
     if [[ -e "$dest_file" ]]; then
@@ -70,12 +81,18 @@ while IFS= read -r -d '' file; do
       echo "Copied and moved to recycle bin: $dest_file"
       ((i++))
     fi
+
+  # Case 2: File with same name exists
   else
     dest_signature=$(get_signature "$dest_file")
+    if [[ "$dest_signature" == "ERROR" || -z "$dest_signature" ]]; then
+      echo "Error getting signature for destination file: $dest_file"
+      continue
+    fi
+
     if [[ "$file_signature" == "$dest_signature" ]]; then
-      echo "Source file signature is $file_signature and Destination file signature is $dest_signature"
+      echo "Source and destination signatures match: $file_signature"
       echo "Duplicate file (same name, same signature). Skipping: $file"
-      echo "Moving duplicate file to the recycle bin due to file_signature matching destination_signature...."
       mv "$file" "$recyclebin/"
       continue
     else
@@ -93,10 +110,14 @@ while IFS= read -r -d '' file; do
           break
         else
           candidate_signature=$(get_signature "$candidate")
+          if [[ "$candidate_signature" == "ERROR" || -z "$candidate_signature" ]]; then
+            ((counter++))
+            continue
+          fi
+
           if [[ "$file_signature" == "$candidate_signature" ]]; then
-            echo "Duplicate file (different name, same signature). Skipping copy of: $file"
-            echo "Moving duplicate file: $file to the recycle bin due to file_signature matching candidate_signature...."
-      		mv "$file" "$recyclebin/"
+            echo "Duplicate file (different name, same signature). Skipping: $file"
+            mv "$file" "$recyclebin/"
             break
           else
             ((counter++))
